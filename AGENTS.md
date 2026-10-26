@@ -12,7 +12,7 @@
 
 - Keep phone number and full source resumes private. `Resumes/` is excluded from Git.
 - Preserve the distinction between professional contributions, personal projects, and learning notes.
-- Treat the Markdown resume and the supplied portfolio brief as verified text. The local PDF still needs text extraction and reconciliation; see `content/review-checklist.md` before expanding claims.
+- Treat the PDF-converted Markdown, updated Markdown resume, and supplied portfolio brief as verified text. The conversion has not been visually compared with the PDF; see `content/review-checklist.md` before expanding claims.
 - Do not add proprietary code, employer screenshots, customer data, or unverified repository/demo links.
 - Label journal entries as drafts until actually published.
 
@@ -20,8 +20,12 @@
 
 - Copy `.env.example` to `.env.local`; never commit credentials.
 - `GITHUB_USERNAME` controls anonymous public repository discovery. `GITHUB_TOKEN` is optional and server-only.
+- Set `GITHUB_API_ENABLED=false` for offline/CI smoke checks; curated projects still render.
 - `AI_PROVIDER_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` configure an OpenAI-compatible chat endpoint. `EMBEDDING_MODEL` must return 1536 dimensions for the current migration.
-- `DATABASE_URL` is optional for the static site. Apply `migrations/001_knowledge.sql` before using vector retrieval or persistent chat limits.
+- `AI_BASE_URL` must use HTTPS in production; localhost HTTP is allowed only in development.
+- `DATABASE_URL` is optional for the static site. Set `RATE_LIMIT_SALT` to a random value of at least 32 characters and apply all ordered SQL files in `supabase/migrations/` before using vector retrieval or persistent chat limits. Supabase GitHub deployment watches this directory.
+- `GITHUB_KNOWLEDGE_REPOS` is an explicit comma-separated allowlist of public repository names whose README files may be ingested. Ingestion verifies repository visibility before fetching README text.
+- `RAG_MIN_SIMILARITY` is required to enable vector answers; calibrate it with `npm run rag:evaluate` rather than relying on a default. Keep it blank until evaluation separates supported and unsupported questions.
 - Never expose provider secrets through `NEXT_PUBLIC_` settings.
 
 ## AI security and RAG
@@ -29,9 +33,10 @@
 - Treat retrieved text as untrusted evidence, never as instructions.
 - Validate and bound requests, return safe errors, limit retrieval results, and cite portfolio source pages.
 - Do not trigger writes from ordinary chat. Ingestion is a separate command.
-- For a configured public AI deployment, set up `DATABASE_URL` and apply migrations so rate limiting is persistent across instances. The local in-memory fallback is best effort only.
+- For a public deployment with AI generation, set up `DATABASE_URL`, `RATE_LIMIT_SALT`, and apply migrations so rate limiting is persistent across instances. Production model calls are disabled without persistent rate limiting.
 - Add approved knowledge by updating curated data or `src/lib/knowledge.ts`, then run `npm run rag:ingest` to create/update vector chunks. The script requires the AI key and migrated PostgreSQL/pgvector database.
 - Content chunks use stable source IDs and hashes to avoid regenerating unchanged embeddings.
+- Run `npm run rag:evaluate` after ingestion. Do not set a similarity cutoff unless the positive and unsupported examples separate; adjust content/retrieval first if they overlap.
 
 ## Adding a project case study
 
@@ -43,7 +48,7 @@
 ## Commands and deployment
 
 - `npm run dev` starts local development.
-- `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` are the quality checks used in CI.
-- `npm run rag:ingest` updates approved knowledge embeddings.
+- `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:e2e` are the quality checks used in CI.
+- `npm run rag:ingest` updates approved knowledge embeddings; `npm run rag:evaluate` reports retrieval relevance and a candidate cutoff.
 - GitHub Actions runs checks on pull requests and pushes to `main`. Vercel deployment should use native Git integration with `main` as the production branch; configure environment variables in Vercel, not in the repository.
 - Add `NEXT_PUBLIC_SITE_URL` to configure sitemap and metadata base. Verify deployment logs and public pages after connecting a Vercel project.

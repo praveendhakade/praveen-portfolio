@@ -1,68 +1,91 @@
-import { experience, profile, projects, skillGroups } from "@/data/portfolio";
-import postgres from "postgres";
+import { education, experience, profile, projects, skillGroups } from "@/data/portfolio";
+import { embedText, type AiConfiguration } from "@/lib/ai/provider";
+import { getDatabase } from "@/lib/database";
+import { getServerEnvironment } from "@/lib/env";
 
-export type KnowledgeSource = { id: string; title: string; href: string; text: string };
+export type KnowledgeSource = {
+  id: string;
+  sourceType: "profile" | "experience" | "education" | "project" | "skills" | "portfolio" | "github-readme";
+  title: string;
+  href: string;
+  text: string;
+  contentPath?: string;
+  projectSlug?: string;
+};
+
+export type RetrievedSource = KnowledgeSource & { score: number };
 
 export const knowledge: KnowledgeSource[] = [
-  { id: "profile", title: "Profile", href: "/about", text: `${profile.name} is a ${profile.role}. ${profile.summary}` },
-  ...experience.map((item, index) => ({ id: `experience-${index}`, title: `${item.role} at ${item.company}`, href: "/experience", text: `${item.dates}. ${item.summary} ${item.details.join(" ")}` })),
-  ...projects.map((project) => ({ id: `project-${project.slug}`, title: project.title, href: `/projects/${project.slug}`, text: `${project.summary} ${project.contribution} Technologies: ${project.technologies.join(", ")}.` })),
-  ...skillGroups.map((group) => ({ id: `skills-${group.title}`, title: `${group.title} skills`, href: "/about", text: group.skills.join(", ") })),
+  { id: "profile", sourceType: "profile", title: "Profile", href: "/about", contentPath: "content/profile.md", text: `${profile.name} is a ${profile.role}. ${profile.summary}` },
+  ...experience.map((item, index) => ({ id: `experience-${index}`, sourceType: "experience" as const, title: `${item.role} at ${item.company}`, href: "/experience", contentPath: "src/data/portfolio.ts", text: `${item.dates}. ${item.summary} ${item.details.join(" ")}` })),
+  { id: "education", sourceType: "education", title: "Education", href: "/experience", contentPath: "src/data/portfolio.ts", text: `${education.degree}. ${education.school}, ${education.location}. ${education.dates}.` },
+  ...projects.map((project) => ({ id: `project-${project.slug}`, sourceType: "project" as const, title: project.title, href: `/projects/${project.slug}`, contentPath: "src/data/portfolio.ts", projectSlug: project.slug, text: `${project.summary} ${project.contribution} Technologies: ${project.technologies.join(", ")}.` })),
+  ...skillGroups.map((group) => ({ id: `skills-${group.title}`, sourceType: "skills" as const, title: `${group.title} skills`, href: "/about", contentPath: "src/data/portfolio.ts", text: group.skills.join(", ") })),
+  { id: "portfolio-assistant", sourceType: "portfolio", title: "Portfolio assistant architecture", href: "/assistant", contentPath: "README.md#assistant-and-rag", text: "The portfolio assistant has a validated Next.js chat route, curated lexical retrieval, source links, and an OpenAI-compatible provider adapter. Optional PostgreSQL with pgvector adds semantic retrieval and persistent rate limits. These external services require configuration; the portfolio remains navigable without them." },
 ];
 
-export function retrieve(query: string, limit = 4): Array<KnowledgeSource & { score: number }> {
-  const stopWords = new Set(["what", "which", "where", "when", "who", "why", "how", "is", "are", "was", "were", "the", "a", "an", "my", "me", "about", "have", "has", "with", "does", "did", "experience", "work", "can", "and", "or", "of", "to", "in", "at", "for", "do", "tell", "praveen"]);
+const stopWords = new Set(["what", "which", "where", "when", "who", "why", "how", "is", "are", "was", "were", "the", "a", "an", "my", "me", "about", "have", "has", "with", "does", "did", "experience", "work", "can", "and", "or", "of", "to", "in", "at", "for", "do", "tell", "praveen"]);
+
+export function retrieve(query: string, limit = 4): RetrievedSource[] {
   const terms = (query.toLowerCase().match(/[a-z0-9+#.]+/g) ?? []).filter((term) => term.length >= 3 && !stopWords.has(term));
   if (!terms.length) return [];
   return knowledge.map((source) => {
-    const text = `${source.title} ${source.text}`.toLowerCase();
-    const sourceTerms = new Set(text.match(/[a-z0-9+#.]+/g) ?? []);
+    const sourceTerms = new Set(`${source.title} ${source.text}`.toLowerCase().match(/[a-z0-9+#.]+/g) ?? []);
     const titleTerms = new Set(source.title.toLowerCase().match(/[a-z0-9+#.]+/g) ?? []);
     const score = terms.reduce((total, term) => total + (sourceTerms.has(term) ? (titleTerms.has(term) ? 3 : 1) : 0), 0);
     return { ...source, score };
   }).filter((source) => source.score > 0).sort((left, right) => right.score - left.score).slice(0, limit);
 }
 
-async function createEmbedding(query: string, apiKey: string): Promise<number[]> {
-  const base = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-  const response = await fetch(`${base}/embeddings`, {
-    method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: process.env.EMBEDDING_MODEL || "text-embedding-3-small", input: query }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error("Embedding provider unavailable");
-  const payload: unknown = await response.json();
-  if (typeof payload !== "object" || payload === null || !("data" in payload) || !Array.isArray(payload.data)) throw new Error("Invalid embedding response");
-  const vector = payload.data[0]?.embedding;
-  if (!Array.isArray(vector) || vector.length !== 1536 || vector.some((value: unknown) => typeof value !== "number")) throw new Error("Invalid embedding vector");
-  return vector;
-}
-
-export async function retrieveGrounded(query: string, apiKey: string): Promise<Array<KnowledgeSource & { score: number }>> {
-  if (!process.env.DATABASE_URL) return retrieve(query);
-  const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 8, idle_timeout: 10 });
-  try {
-    const vector = `[${(await createEmbedding(query, apiKey)).join(",")}]`;
-    const rows = await sql<{ title: string; content: string; metadata: { href?: string }; score: number }[]>`
-      select title, content, metadata, 1 - (embedding <=> ${vector}::vector) as score
+export async function retrieveVectorCandidates(query: string, config: AiConfiguration, limit = 8): Promise<RetrievedSource[]> {
+  const environment = getServerEnvironment();
+  if (!environment.DATABASE_URL) return retrieve(query);
+  const database = getDatabase();
+  const vector = `[${(await embedText(query, config)).join(",")}]`;
+  const rows = await database<{ id: string; source_id: string; source_type: KnowledgeSource["sourceType"]; title: string; content: string; metadata: { href?: string; contentPath?: string; projectSlug?: string }; score: number }[]>`
+      select id, source_id, source_type, title, content, metadata,
+        1 - (embedding <=> ${vector}::vector) as score
       from knowledge_chunks
       order by embedding <=> ${vector}::vector
-      limit 4
+      limit ${limit}
     `;
-    const relevant = rows.filter((row) => row.score >= 0.25).map((row, index) => ({
-      id: `retrieved-${index}`, title: row.title,
-      href: typeof row.metadata.href === "string" ? row.metadata.href : "/projects",
-      text: row.content, score: row.score,
-    }));
-    return relevant.length ? relevant : retrieve(query);
-  } finally { await sql.end(); }
+  const lexical = retrieve(query, 8);
+  return rows.map((row) => {
+      const lexicalMatch = lexical.find((source) => source.title === row.title || source.href === row.metadata.href);
+      const source: KnowledgeSource = {
+        id: row.source_id,
+        sourceType: row.source_type,
+        title: row.title,
+        href: typeof row.metadata.href === "string" ? row.metadata.href : "/projects",
+        text: row.content,
+        ...(typeof row.metadata.contentPath === "string" ? { contentPath: row.metadata.contentPath } : {}),
+        ...(typeof row.metadata.projectSlug === "string" ? { projectSlug: row.metadata.projectSlug } : {}),
+      };
+      return { ...source, score: row.score + (lexicalMatch ? Math.min(lexicalMatch.score * 0.01, 0.05) : 0) };
+  });
+}
+
+export async function retrieveGrounded(query: string, config: AiConfiguration): Promise<RetrievedSource[]> {
+  const environment = getServerEnvironment();
+  if (!environment.DATABASE_URL) return retrieve(query);
+  const threshold = environment.RAG_MIN_SIMILARITY;
+  if (threshold === undefined) throw new Error("RAG_MIN_SIMILARITY must be calibrated with the retrieval evaluation before vector retrieval is enabled.");
+  const vectorSources = (await retrieveVectorCandidates(query, config)).filter((source) => source.score >= threshold);
+  const lexicalSources = retrieve(query, 4).map((source) => ({ ...source, score: source.score * 0.01 }));
+  const combined = new Map<string, RetrievedSource>();
+  for (const source of [...vectorSources, ...lexicalSources]) {
+    const key = `${source.href}:${source.title}`;
+    const previous = combined.get(key);
+    if (!previous || source.score > previous.score) combined.set(key, source);
+  }
+  return [...combined.values()].sort((left, right) => right.score - left.score).slice(0, 4);
 }
 
 export async function checkPersistentRateLimit(clientKey: string, max = 12): Promise<boolean | null> {
-  if (!process.env.DATABASE_URL) return null;
-  const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 8, idle_timeout: 10 });
-  try {
-    const rows = await sql<{ request_count: number }[]>`
+  const environment = getServerEnvironment();
+  if (!environment.DATABASE_URL) return null;
+  const database = getDatabase();
+  const rows = await database<{ request_count: number }[]>`
       insert into chat_rate_limits (client_key, window_started_at, request_count)
       values (${clientKey}, now(), 1)
       on conflict (client_key) do update set
@@ -71,6 +94,6 @@ export async function checkPersistentRateLimit(clientKey: string, max = 12): Pro
         updated_at = now()
       returning request_count
     `;
-    return rows[0].request_count <= max;
-  } finally { await sql.end(); }
+  if (Math.random() < 0.01) await database`delete from chat_rate_limits where updated_at < now() - interval '1 day'`;
+  return rows[0].request_count <= max;
 }
