@@ -66,6 +66,8 @@ For knowledge ingestion, set `GITHUB_KNOWLEDGE_REPOS` to a deliberate list of re
 
 `POST /api/chat` bounds the request body while streaming, validates question length, applies rate limits, retrieves at most four evidence chunks, and returns portfolio source links. Retrieved content and visitor questions are treated as untrusted data. The assistant cannot execute tools, write portfolio data, or access private repositories.
 
+AI provider calls emit structured `ai_provider_request` events to the server runtime logs, including operation, model, HTTP status, duration, and safe provider error type/code when returned. Logs omit API keys, prompts, and visitor questions. On Vercel, view these in the deployment's function logs; retention follows Vercel's plan.
+
 Without `AI_PROVIDER_API_KEY`, the server uses lexical retrieval and shows the UI's AI-disabled notice alongside matching evidence. With a provider key but no database in production, model calls are disabled so public usage cannot incur unmetered inference without durable rate limiting.
 
 ### Supabase PostgreSQL and pgvector setup
