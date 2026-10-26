@@ -1,0 +1,4 @@
+import type { Metadata } from "next";
+import { experience, education } from "@/data/portfolio";
+export const metadata: Metadata = { title: "Experience" };
+export default function ExperiencePage() { return <section className="container"><p className="eyebrow">Experience</p><h1>Building, improving, and supporting software.</h1><div className="prose">{experience.map((job) => <article className="timeline-item" key={job.company}><p className="mono">{job.dates} · {job.location}</p><h2>{job.role}</h2><h3>{job.company}</h3><p>{job.summary}</p>{job.details.length > 0 && <ul className="bullets">{job.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}</article>)}<h2>Education</h2><p>{education.degree}<br />{education.school}, {education.location}<br />{education.dates}</p></div></section>; }
