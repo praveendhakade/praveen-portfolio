@@ -1,3 +1,4 @@
+import "./load-env";
 import { getAiConfiguration } from "../src/lib/ai/provider";
 import { getServerEnvironment } from "../src/lib/env";
 import { retrieveVectorCandidates } from "../src/lib/knowledge";

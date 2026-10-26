@@ -30,7 +30,7 @@ async function providerErrorDetails(response: Response): Promise<ProviderErrorDe
     const error = "error" in payload && typeof payload.error === "object" && payload.error !== null ? payload.error : payload;
     return {
       code: "code" in error ? safeProviderIdentifier(error.code) : undefined,
-      type: "type" in error ? safeProviderIdentifier(error.type) : undefined,
+      type: "type" in error ? safeProviderIdentifier(error.type) : "status" in error ? safeProviderIdentifier(error.status) : undefined,
     };
   } catch {
     return {};
@@ -53,16 +53,17 @@ async function requestProvider(
   model: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  requestUrl = apiUrl(config, operation === "chat.completions" ? "chat/completions" : operation),
+  headers: Record<string, string> = { Authorization: `Bearer ${config.AI_PROVIDER_API_KEY}`, "Content-Type": "application/json" },
 ): Promise<Response> {
   const requestId = randomUUID();
   const providerHost = new URL(config.AI_BASE_URL).host;
-  const path = operation === "chat.completions" ? "chat/completions" : operation;
   const startedAt = Date.now();
   let response: Response;
   try {
-    response = await fetch(apiUrl(config, path), {
+    response = await fetch(requestUrl, {
       method: "POST",
-      headers: { Authorization: `Bearer ${config.AI_PROVIDER_API_KEY}`, "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -121,10 +122,24 @@ function apiUrl(config: AiConfiguration, path: string): string {
 
 export async function embedText(input: string, config: AiConfiguration, timeoutMs = 10_000): Promise<number[]> {
   try {
-    const response = await requestProvider(config, "embeddings", config.EMBEDDING_MODEL, { model: config.EMBEDDING_MODEL, input }, timeoutMs);
+    const isGemini = new URL(config.AI_BASE_URL).hostname === "generativelanguage.googleapis.com";
+    const response = isGemini
+      ? await requestProvider(
+        config,
+        "embeddings",
+        config.EMBEDDING_MODEL,
+        { model: `models/${config.EMBEDDING_MODEL}`, content: { parts: [{ text: input }] }, embedContentConfig: { outputDimensionality: 1536 } },
+        timeoutMs,
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.EMBEDDING_MODEL)}:embedContent`,
+        { "x-goog-api-key": config.AI_PROVIDER_API_KEY, "Content-Type": "application/json" },
+      )
+      : await requestProvider(config, "embeddings", config.EMBEDDING_MODEL, { model: config.EMBEDDING_MODEL, input }, timeoutMs);
     const payload: unknown = await response.json();
     const data = typeof payload === "object" && payload !== null && "data" in payload ? payload.data : undefined;
-    const vector = Array.isArray(data) && typeof data[0] === "object" && data[0] !== null && "embedding" in data[0] ? data[0].embedding : undefined;
+    const embedding = typeof payload === "object" && payload !== null && "embedding" in payload ? payload.embedding : undefined;
+    const vector = isGemini
+      ? typeof embedding === "object" && embedding !== null && "values" in embedding ? embedding.values : undefined
+      : Array.isArray(data) && typeof data[0] === "object" && data[0] !== null && "embedding" in data[0] ? data[0].embedding : undefined;
     if (!Array.isArray(vector) || vector.length !== 1536 || vector.some((value: unknown) => typeof value !== "number" || !Number.isFinite(value))) throw new AiProviderError("invalid-response", "Embedding response did not contain the configured 1536-dimensional vector");
     return vector;
   } catch (error) {

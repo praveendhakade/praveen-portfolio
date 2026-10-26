@@ -1,3 +1,4 @@
+import "./load-env";
 import { createHash } from "node:crypto";
 import postgres from "postgres";
 import { getAiConfiguration, embedText } from "../src/lib/ai/provider";
@@ -59,7 +60,8 @@ try {
     const chunks = splitIntoChunks(source.text);
     for (let index = 0; index < chunks.length; index += 1) {
       const content = chunks[index];
-      const hash = createHash("sha256").update(content).digest("hex");
+      // Include embedding configuration so changing providers/models refreshes every vector.
+      const hash = createHash("sha256").update(`${new URL(ai.AI_BASE_URL).host}\0${ai.EMBEDDING_MODEL}\0${content}`).digest("hex");
       const sourceId = `${source.id}:${index}`;
       const id = createHash("sha256").update(sourceId).digest("hex");
       activeSourceIds.push(sourceId);
